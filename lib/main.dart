@@ -9,7 +9,7 @@ void main() async {
   final prefs = await SharedPreferences.getInstance();
   final deviceId = prefs.getString("deviceId");
   if (deviceId != null) {
-    ioManager.devideId = deviceId;
+    ioManager.deviceId = deviceId;
   }
   runApp(const MyApp());
 }

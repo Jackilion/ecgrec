@@ -3,6 +3,7 @@ import 'package:ecgrec/settings.dart';
 import 'package:flutter/material.dart';
 import 'package:fluttericon/fontelico_icons.dart';
 import 'package:polar/polar.dart';
+import 'package:system_clock/system_clock.dart';
 
 class Home extends StatefulWidget {
   const Home({super.key});
@@ -45,7 +46,7 @@ class _HomeState extends State<Home> {
   }
 
   void connect() async {
-    if (ioManager.devideId == "none") {
+    if (ioManager.deviceId == "none") {
       showDialog(
           context: context,
           builder: (context) => AlertDialog(
@@ -65,8 +66,9 @@ class _HomeState extends State<Home> {
     });
     print("Connecting...");
 
-    polar.disconnectFromDevice(ioManager.devideId);
-    polar.deviceConnectedStream.listen((event) {
+    polar.disconnectFromDevice(ioManager.deviceId);
+
+    polar.deviceConnectedStream.listen((event) async {
       setState(() {
         if (event.isConnectable) {
           connectingState = ConnectingState.connected;
@@ -76,7 +78,7 @@ class _HomeState extends State<Home> {
       });
       //print('Heart rate: ${event.deviceId}');
     });
-    await polar.connectToDevice(ioManager.devideId);
+    await polar.connectToDevice(ioManager.deviceId);
 
     ioManager.init();
 
@@ -85,17 +87,24 @@ class _HomeState extends State<Home> {
 
   void record() async {
     print("lets go");
-    await polar.setLocalTime(ioManager.devideId, DateTime.now());
+    final now = DateTime.now();
+    final polarTimestamp = convertDateTimeToPolarNanos(now);
+    final elapsedRealtime = SystemClock.elapsedRealtime().inMicroseconds;
+    await polar.setLocalTime(ioManager.deviceId, now);
+
+    ioManager.saveTimeSettingEvent(polarTimestamp, elapsedRealtime);
     //polar.di
     setState(() {
       connectingState = ConnectingState.initRecording;
     });
     polar.heartRateStream.listen((event) {
-      setState(() {
-        heartRate = event.data.hr;
-      });
+      if (mounted) {
+        setState(() {
+          heartRate = event.data.hr;
+        });
+      }
     });
-    polar.startEcgStreaming(ioManager.devideId).listen((event) {
+    polar.startEcgStreaming(ioManager.deviceId).listen((event) {
       if (connectingState != ConnectingState.recording) {
         setState(() {
           connectingState = ConnectingState.recording;
@@ -104,13 +113,13 @@ class _HomeState extends State<Home> {
       ioManager.saveECGBlock(event.timeStamp, event.samples);
     });
 
-    polar.startAccStreaming(ioManager.devideId).listen((event) {
+    polar.startAccStreaming(ioManager.deviceId).listen((event) {
       ioManager.saveACCBlock(event.timeStamp, event.samples);
     });
   }
 
   void stopRecording() async {
-    polar.disconnectFromDevice(ioManager.devideId);
+    polar.disconnectFromDevice(ioManager.deviceId);
 
     setState(() {
       connectingState = ConnectingState.idle;
@@ -132,16 +141,20 @@ class _HomeState extends State<Home> {
     ioManager.close();
   }
 
+  int convertDateTimeToPolarNanos(DateTime dateTime) {
+    const offset = 946684800000000; //microseconds since epoch on 01/01/2000 UTC
+    final micros = dateTime.microsecondsSinceEpoch;
+    return (micros - offset) * 1000;
+  }
+
   void setMarker() async {
     //H10 Polar sensor measures timestamp in nanoseconds since 01/01 2000
     //The sensor ignores any timezones and always takes UTC
-    final date = DateTime.now().microsecondsSinceEpoch;
-    final date2000 = DateTime(2000)
-        .toUtc()
-        .add(const Duration(hours: 1))
-        .microsecondsSinceEpoch; //toUtc subtracted an hour.
+    final now = DateTime.now();
+    final timestamp = convertDateTimeToPolarNanos(now);
 
-    final timestamp = (date - date2000) * 1000;
+    ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Ein marker wurde erfolgreich gesetzt.")));
     print("Set Marker at: $timestamp");
     ioManager.saveMarker(timestamp, "event");
   }
@@ -329,7 +342,10 @@ class _HomeState extends State<Home> {
   Widget build(BuildContext context) {
     return Scaffold(
         appBar: AppBar(
-          title: const Center(child: Text("ECG")),
+          title: Center(
+              child: Text(ioManager.deviceId != "none"
+                  ? ioManager.deviceId
+                  : "No Device Id")),
           actions: [
             IconButton(
                 onPressed: () {

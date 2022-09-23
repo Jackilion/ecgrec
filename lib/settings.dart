@@ -14,8 +14,8 @@ class _SettingsState extends State<Settings> {
 
   @override
   void initState() {
-    if (IOManager().devideId != "none") {
-      textFieldController.text = IOManager().devideId;
+    if (IOManager().deviceId != "none") {
+      textFieldController.text = IOManager().deviceId;
     }
     super.initState();
   }
@@ -29,7 +29,7 @@ class _SettingsState extends State<Settings> {
   void setDeviceId() async {
     var text = textFieldController.text;
     if (text.isNotEmpty) {
-      IOManager().devideId = text;
+      IOManager().deviceId = text;
       (await SharedPreferences.getInstance()).setString("deviceId", text);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -54,7 +54,7 @@ class _SettingsState extends State<Settings> {
               ));
       return;
     }
-    IOManager().devideId = "none";
+    IOManager().deviceId = "none";
     IOManager().resetDB();
     await (await SharedPreferences.getInstance()).clear();
     textFieldController.text = "";
