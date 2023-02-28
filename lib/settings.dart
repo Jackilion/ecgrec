@@ -1,6 +1,7 @@
-import 'package:ecgrec/io_manager.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'io_manager.dart';
 
 class Settings extends StatefulWidget {
   const Settings({super.key});
@@ -35,10 +36,22 @@ class _SettingsState extends State<Settings> {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
             content: Text("Die Device Id wurde erfolgreich gesetzt")));
       }
+      IOManager().logToFile("Set the Polar deviceID to $text");
     }
   }
 
   void resetData() async {
+    IOManager().deviceId = "none";
+    IOManager().resetDB();
+    await (await SharedPreferences.getInstance()).clear();
+    textFieldController.text = "";
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text("Das Gerät wurde erfolgreich resetted.")));
+    }
+  }
+
+  void resetDataDialog() async {
     if (IOManager().isDatabaseOpen()) {
       showDialog(
           context: context,
@@ -52,15 +65,51 @@ class _SettingsState extends State<Settings> {
                       child: const Text("Okay"))
                 ],
               ));
+
       return;
     }
-    IOManager().deviceId = "none";
-    IOManager().resetDB();
-    await (await SharedPreferences.getInstance()).clear();
-    textFieldController.text = "";
+    showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+              content:
+                  const Text("Diese Aktion löscht alle logs & recordings."),
+              title: const Text("Sicher?"),
+              actions: [
+                TextButton(
+                    onPressed: () {
+                      resetData();
+                      Navigator.of(context).pop();
+                    },
+                    child: const Text("Löschen")),
+                TextButton(
+                    onPressed: Navigator.of(context).pop,
+                    child: const Text("Zurück"))
+              ],
+            ));
+  }
+
+  void exportData() async {
+    if (IOManager().isDatabaseOpen()) {
+      showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+                content: const Text(
+                    "Die Datenbank ist geöffnet, es kann deshalb aus sicherheitsgründen kein export durchgeführt werden."),
+                title: const Text("Fehler"),
+                actions: [
+                  TextButton(
+                      onPressed: Navigator.of(context).pop,
+                      child: const Text("Okay"))
+                ],
+              ));
+      return;
+    }
+    await IOManager().exportData();
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text("Das Gerät wurde erfolgreich resetted.")));
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text("Daten exportet.")));
+      }
     }
   }
 
@@ -107,17 +156,28 @@ class _SettingsState extends State<Settings> {
                                 ))))
                   ],
                 ),
+                const SizedBox(height: 20),
+                const FractionallySizedBox(
+                    widthFactor: 1,
+                    child: Text("Database Path: ",
+                        style: TextStyle(fontWeight: FontWeight.bold))),
+                const SizedBox(height: 5),
+                FractionallySizedBox(
+                    widthFactor: 1,
+                    child: Text(IOManager().savePath,
+                        style: const TextStyle(fontWeight: FontWeight.bold))),
                 const SizedBox(height: 50),
                 SizedBox(
                   width: 150,
                   child: ElevatedButton(
-                      onPressed: resetData, child: const Text("Reset Data")),
+                      onPressed: resetDataDialog,
+                      child: const Text("Reset Data")),
                 ),
                 SizedBox(
                   width: 150,
                   child: ElevatedButton(
-                      onPressed: () {}, child: const Text("Export Data")),
-                )
+                      onPressed: exportData, child: const Text("Export Data")),
+                ),
               ],
             ),
           ),

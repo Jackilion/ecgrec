@@ -1,9 +1,12 @@
-import 'package:ecgrec/io_manager.dart';
-import 'package:ecgrec/settings.dart';
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:fluttericon/fontelico_icons.dart';
 import 'package:polar/polar.dart';
 import 'package:system_clock/system_clock.dart';
+
+import 'home_screen_contents.dart';
+import 'io_manager.dart';
+import 'settings.dart';
 
 class Home extends StatefulWidget {
   const Home({super.key});
@@ -18,6 +21,7 @@ enum ConnectingState {
   idle,
   initRecording,
   recording,
+  recordingStopped,
   error
 }
 
@@ -27,18 +31,12 @@ class _HomeState extends State<Home> {
   final IOManager ioManager = IOManager();
   //state variables:
   ConnectingState connectingState = ConnectingState.idle;
+
+  StreamSubscription<PolarDeviceInfo>? connectedStreamSubscription;
+  StreamSubscription<PolarHeartRateEvent>? hearRateStreamSubscription;
+  StreamSubscription<PolarEcgData>? ecgStreamSubscription;
+  StreamSubscription<PolarDeviceInfo>? disconnectedStreamSubscription;
   int heartRate = 0;
-
-  final TextStyle titleText = TextStyle(
-    fontWeight: FontWeight.w500,
-    color: Colors.grey[800],
-    fontSize: 25,
-  );
-
-  final TextStyle bodyText = TextStyle(
-    color: Colors.grey[800],
-    fontSize: 16,
-  );
 
   @override
   void initState() {
@@ -64,47 +62,80 @@ class _HomeState extends State<Home> {
     setState(() {
       connectingState = ConnectingState.connecting;
     });
-    print("Connecting...");
-
+    ioManager
+        .logToFile("Connecting to Polar H10 with ID: ${ioManager.deviceId}");
     polar.disconnectFromDevice(ioManager.deviceId);
 
-    polar.deviceConnectedStream.listen((event) async {
-      setState(() {
-        if (event.isConnectable) {
-          connectingState = ConnectingState.connected;
-        } else {
-          connectingState = ConnectingState.error;
-        }
-      });
-      //print('Heart rate: ${event.deviceId}');
-    });
+    disconnectedStreamSubscription =
+        polar.deviceDisconnectedStream.listen((event) async {
+      ioManager.logToFile(
+          "Polar DisconnectedStream fired, with isConnectable = ${event.isConnectable}");
+      if (!ioManager.isDatabaseOpen()) return;
+
+      var ecgCount = await ioManager.readECG();
+      var accCount = await ioManager.readACC();
+      debugPrint("Found $ecgCount entries in ECG table");
+      debugPrint("Found $accCount entries in ACC table");
+
+      ioManager.close();
+      if (mounted) {
+        setState(() {
+          connectingState = ConnectingState.recordingStopped;
+        });
+      }
+    }, cancelOnError: true);
+    connectedStreamSubscription =
+        polar.deviceConnectedStream.listen((event) async {
+      ioManager.logToFile(
+          "Polar ConnectedStream fired, with isConnectable = ${event.isConnectable}");
+
+      //Case1: User started new session and wants to connect.
+      if (connectingState == ConnectingState.connecting) {
+        await ioManager.init();
+        setState(() {
+          print(
+              "Setting state from within connected stream after new connect!");
+          if (event.isConnectable) {
+            connectingState = ConnectingState.connected;
+          } else {
+            connectingState = ConnectingState.error;
+          }
+        });
+      }
+      //Case2: User went out of range/ turned off sensor and reconnected.
+      //In this case, don't redirect the screen
+      if (connectingState == ConnectingState.recordingStopped) {}
+    }, cancelOnError: true);
     await polar.connectToDevice(ioManager.deviceId);
-
-    ioManager.init();
-
-    // polar.
   }
 
-  void record() async {
-    print("lets go");
+  Future<void> initRecording() async {
+    //Set the sensor time and save time setting to DB
     final now = DateTime.now();
     final polarTimestamp = convertDateTimeToPolarNanos(now);
     final elapsedRealtime = SystemClock.elapsedRealtime().inMicroseconds;
     await polar.setLocalTime(ioManager.deviceId, now);
 
+    ioManager.logToFile(
+        "Setting the sensor time to: $polarTimestamp. ERT: $elapsedRealtime.");
     ioManager.saveTimeSettingEvent(polarTimestamp, elapsedRealtime);
-    //polar.di
+  }
+
+  void record() async {
+    await initRecording();
+
     setState(() {
       connectingState = ConnectingState.initRecording;
     });
-    polar.heartRateStream.listen((event) {
+    hearRateStreamSubscription = polar.heartRateStream.listen((event) {
       if (mounted) {
         setState(() {
           heartRate = event.data.hr;
         });
       }
     });
-    polar.startEcgStreaming(ioManager.deviceId).listen((event) {
+    ecgStreamSubscription =
+        polar.startEcgStreaming(ioManager.deviceId).listen((event) {
       if (connectingState != ConnectingState.recording) {
         setState(() {
           connectingState = ConnectingState.recording;
@@ -116,29 +147,47 @@ class _HomeState extends State<Home> {
     polar.startAccStreaming(ioManager.deviceId).listen((event) {
       ioManager.saveACCBlock(event.timeStamp, event.samples);
     });
+    ioManager.logToFile("Started Polar SDK ECG, ACC and HR streams.");
   }
 
   void stopRecording() async {
+    ioManager.logToFile("User has cancelled the recording.");
     polar.disconnectFromDevice(ioManager.deviceId);
+  }
+
+  void stopRecordingDialog() async {
+    showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+              content: const Text(
+                  "Die Aktuelle Messung wird gestoppt. Du kannst jederzeit eine neue starten."),
+              title: const Text("Sicher?"),
+              actions: [
+                TextButton(
+                    onPressed: () {
+                      stopRecording();
+                      Navigator.of(context).pop();
+                    },
+                    child: const Text("Stoppen")),
+                TextButton(
+                    onPressed: Navigator.of(context).pop,
+                    child: const Text("Zurück"))
+              ],
+            ));
+  }
+
+  void cleanUp() async {
+    //Clean up all existing streams
+    ioManager.logToFile("Cleaning up all Stream Subscriptions.");
+    polar.disconnectFromDevice(IOManager().deviceId);
+    await connectedStreamSubscription?.cancel();
+    await ecgStreamSubscription?.cancel();
+    await hearRateStreamSubscription?.cancel();
+    await disconnectedStreamSubscription?.cancel();
 
     setState(() {
       connectingState = ConnectingState.idle;
     });
-    //This is here because there is a bug, where sometimes if "stop recording"
-    //is clicked, the connection closes, recording stops, but the screen doesn't update
-    //It happens rarely enough that I don't want to spend the time chasing it right now,
-    //So this should fix the app crashing. The user will just assume he hasn't clicked it
-    //properly, and click it again.
-    //I suspect this is because of some async shennanigangs
-    if (!ioManager.isDatabaseOpen()) return;
-
-    //print some debug info
-    var ecgCount = await ioManager.readECG();
-    var accCount = await ioManager.readACC();
-    debugPrint("Found $ecgCount entries in ECG table");
-    debugPrint("Found $accCount entries in ACC table");
-
-    ioManager.close();
   }
 
   int convertDateTimeToPolarNanos(DateTime dateTime) {
@@ -155,187 +204,8 @@ class _HomeState extends State<Home> {
 
     ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Ein marker wurde erfolgreich gesetzt.")));
-    print("Set Marker at: $timestamp");
+    ioManager.logToFile("Set a Marker at: $timestamp, with label: 'event'");
     ioManager.saveMarker(timestamp, "event");
-  }
-
-  Widget howToText(BuildContext context) {
-    if (connectingState == ConnectingState.idle ||
-        connectingState == ConnectingState.connecting) {
-      return Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Fontelico.emo_happy,
-            size: 100,
-            color: Theme.of(context).primaryColorDark,
-          ),
-          const SizedBox(height: 20),
-          SizedBox(
-              height: 70,
-              child: Center(child: Text("Hallo!", style: titleText))),
-          const SizedBox(height: 10),
-          Text(
-            "Um eine Messung zu starten, lege bitte als erstes den H10 Polar Gurt um.",
-            textAlign: TextAlign.center,
-            style: bodyText,
-          ),
-          const SizedBox(height: 10),
-          Text(
-            'Nach ca. 30 sekunden, klick auf "Verbinden"',
-            textAlign: TextAlign.center,
-            style: bodyText,
-          ),
-          const SizedBox(height: 50),
-          Center(
-              child: Text(
-            "Verbinde . . . ",
-            style: TextStyle(
-                fontWeight: FontWeight.bold,
-                color: connectingState == ConnectingState.connecting
-                    ? Colors.black
-                    : Colors.white),
-          )),
-        ],
-      );
-    }
-    if (connectingState == ConnectingState.connected ||
-        connectingState == ConnectingState.initRecording) {
-      return Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Fontelico.emo_wink,
-            size: 100,
-            color: Theme.of(context).primaryColorDark,
-          ),
-          const SizedBox(height: 20),
-          SizedBox(
-            height: 70,
-            child: Center(
-              child: Text(
-                "Ich habe deinen Gurt gefunden!",
-                style: titleText,
-                textAlign: TextAlign.center,
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            "Bitte lass den Gurt für die nächsten 48h um.",
-            textAlign: TextAlign.center,
-            style: bodyText,
-          ),
-          const SizedBox(height: 10),
-          Text(
-            'Um eine Messung zu starten, klicke auf "Messung starten"',
-            textAlign: TextAlign.center,
-            style: bodyText,
-          ),
-          const SizedBox(height: 50),
-          Center(
-              child: Text(
-            "Starte Messung . . . ",
-            style: TextStyle(
-                fontWeight: FontWeight.bold,
-                color: connectingState == ConnectingState.initRecording
-                    ? Colors.black
-                    : Colors.white),
-          )),
-        ],
-      );
-    }
-    if (connectingState == ConnectingState.recording) {
-      return Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Fontelico.emo_squint,
-            size: 100,
-            color: Theme.of(context).primaryColorDark,
-          ),
-          const SizedBox(height: 20),
-          SizedBox(
-            height: 70,
-            child: Center(
-              child: Text(
-                "Messung ist im Gange.",
-                style: titleText,
-                textAlign: TextAlign.center,
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            "Bitte nimm den Gurt nicht ab während die Messung läuft.",
-            textAlign: TextAlign.center,
-            style: bodyText,
-          ),
-          const SizedBox(height: 10),
-          Text(
-            'Wenn du einen Zeitpunkt merken möchtest, klicke auf "Marker setzen"',
-            textAlign: TextAlign.center,
-            style: bodyText,
-          ),
-          const SizedBox(height: 50),
-          Center(
-              child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.monitor_heart_outlined),
-              Text("Herzrate: ${heartRate.toString()}",
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                  )),
-            ],
-          ))
-        ],
-      );
-    }
-    if (connectingState == ConnectingState.error) {
-      return const Text("error");
-    }
-    return const Text("error");
-  }
-
-  Widget bottomActions(BuildContext context) {
-    if (connectingState == ConnectingState.idle ||
-        connectingState == ConnectingState.connecting) {
-      return ElevatedButton(
-          onPressed: connectingState == ConnectingState.idle ? connect : null,
-          child: const Text("Verbinden"));
-    }
-    if (connectingState == ConnectingState.connected ||
-        connectingState == ConnectingState.initRecording) {
-      return ElevatedButton(
-          onPressed:
-              connectingState == ConnectingState.connected ? record : null,
-          child: const Text("Messung starten"));
-    }
-    if (connectingState == ConnectingState.recording) {
-      return Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          ElevatedButton(
-              style: ElevatedButton.styleFrom(fixedSize: const Size(150, 20)),
-              onPressed: stopRecording,
-              child: const Text("Messung stoppen")),
-          ElevatedButton(
-              style: ElevatedButton.styleFrom(fixedSize: const Size(150, 20)),
-              onPressed: setMarker,
-              child: const Text("Marker setzen")),
-        ],
-      );
-      // return Column(
-      //   children: [
-      //     ElevatedButton(
-      //         onPressed: stopRecording, child: const Text("Messung stoppen")),
-      //     const SizedBox(height: 10),
-      //     ElevatedButton(onPressed: () {}, child: const Text("Marker setzen")),
-      //   ],
-      // );
-    }
-    return const Text("Error");
   }
 
   @override
@@ -365,13 +235,15 @@ class _HomeState extends State<Home> {
                   //color: Colors.green,
                   child: Padding(
                       padding: const EdgeInsets.all(20.0),
-                      child: howToText(context)),
+                      child: howToText(context, connectingState, heartRate)),
                 )),
             Expanded(
                 flex: 1,
                 child: Container(
                     //color: Colors.red,
-                    child: Center(child: bottomActions(context))))
+                    child: Center(
+                        child: bottomActions(context, connectingState, connect,
+                            record, stopRecordingDialog, setMarker, cleanUp))))
             // const Flexible(
             //     flex: 1,
             //     child: Center(

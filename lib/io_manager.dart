@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:polar/polar.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:system_clock/system_clock.dart';
 
@@ -29,10 +30,28 @@ class IOManager {
     return _ioManager;
   }
 
+  File? _logFile;
+  void logToFile(String message) {
+    _logFile ??= File("${path!.path}/log.txt");
+    var formatted = "${DateTime.now().toIso8601String()}:\t$message\n";
+    _logFile!.writeAsStringSync(formatted, mode: FileMode.append);
+  }
+
+  Future<void> exportData() async {
+    File db = File("${path!.path}/ecg.db");
+    final startTime =
+        (await SharedPreferences.getInstance()).getString("startTime");
+    db.rename("${path!.path}/${deviceId}_$startTime.db");
+    logToFile(
+        "DB file has been renamed to ${path!.path}/${deviceId}_$startTime.db");
+  }
+
   //Must be called before anything else in this singleton
   Future<void> init() async {
     path = await getExternalStorageDirectory();
     //path = await getApplicationDocumentsDirectory();
+
+    _logFile ??= File("${path!.path}/log.txt");
 
     var status = await Permission.storage.status;
     if (status.isDenied) await Permission.storage.request();
@@ -49,9 +68,18 @@ class IOManager {
           'CREATE TABLE TIME_SETS (elapsed_realtime INTEGER, new_time INTEGER);');
       await writeConfigTable(db);
     });
+    final prefs = await SharedPreferences.getInstance();
+    final iso = DateTime.now().toIso8601String();
+    var startTimePref = prefs.getString("startTime");
+    if (startTimePref == null) prefs.setString("startTime", iso);
     queryStreamController = StreamController<String>();
     queryStream = queryStreamController!.stream;
     queryStream!.listen(_handleQueries);
+    logToFile("Opened a DB connection to ${path!.path}/ecg.db");
+    if (startTimePref == null) {
+      logToFile(
+          "It was the first time a DB connection has been established on this device, so I saved the startTime as $iso");
+    }
   }
 
   Future<void> writeConfigTable(Database db) async {
@@ -87,7 +115,9 @@ class IOManager {
   int queryCounterLimit = 100;
 
   void _handleQueries(String query) {
-    if (queryCounter == 0) queryBuffer = database!.batch();
+    if (queryCounter == 0 || queryBuffer == null) {
+      queryBuffer = database!.batch();
+    }
     queryBuffer!.rawInsert(query);
     queryCounter++;
     if (queryCounter == queryCounterLimit) {
@@ -106,7 +136,13 @@ class IOManager {
         {"elapsed_realtime": elapsedRealtime, "new_time": timestamp});
   }
 
+  int oldTimestamp = 0;
+
   void saveECGBlock(int timestamp, List<int> samples) async {
+    if (oldTimestamp == timestamp) {
+      print("FOUND THE SAME TIMESTAMP IN 2 PACKAGES!!!");
+    }
+    oldTimestamp = timestamp;
     final elapsedRealtime = SystemClock.elapsedRealtime().inMicroseconds;
     final sampleCount = samples.length;
     final sampleSum = samples.reduce((value, element) => value + element);
@@ -163,6 +199,8 @@ class IOManager {
 
   void close() async {
     //commit all remaining queries:
+    logToFile("Closing the DB connection.");
+    if (database == null || !database!.isOpen) return;
     await queryBuffer!.commit();
     queryCounter = 0;
     var map =
