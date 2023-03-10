@@ -1,11 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:is_lock_screen/is_lock_screen.dart';
 import 'package:polar/polar.dart';
 import 'package:system_clock/system_clock.dart';
 
 import 'home_screen_contents.dart';
 import 'io_manager.dart';
+import 'notification_manager.dart';
 import 'settings.dart';
 
 class Home extends StatefulWidget {
@@ -25,7 +27,7 @@ enum ConnectingState {
   error
 }
 
-class _HomeState extends State<Home> {
+class _HomeState extends State<Home> with WidgetsBindingObserver {
   final polar = Polar();
   //final identifier = "94FF4C29";
   final IOManager ioManager = IOManager();
@@ -41,6 +43,39 @@ class _HomeState extends State<Home> {
   @override
   void initState() {
     super.initState();
+    Timer.periodic(const Duration(minutes: 10), (timer) {
+      if (connectingState != ConnectingState.recording) {
+        NotificationManager().showNotification(
+            "\u26A0 Recording stopped \u26A0", "Please start a new recording.");
+      }
+    });
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+  }
+
+  void timerCallback() {}
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) async {
+    if (state == AppLifecycleState.paused) {
+      var locked = await isLockScreen();
+      if (locked != null && locked) {
+      } else {
+        NotificationManager().showNotification("\u26A0 App Verlassen \u26A0",
+            "Bitte lass die App im Vordergrund.");
+      }
+    } else if (state == AppLifecycleState.resumed) {
+      if (IOManager().isRecordingRunning &&
+          connectingState == ConnectingState.recording) {
+        NotificationManager().showNotification(
+            "Messung im Gange", "Deine Messung läuft gerade.");
+      }
+    }
   }
 
   void connect() async {
@@ -72,6 +107,8 @@ class _HomeState extends State<Home> {
           "Polar DisconnectedStream fired, with isConnectable = ${event.isConnectable}");
       if (!ioManager.isDatabaseOpen()) return;
 
+      NotificationManager().showNotification(
+          "\u26A0 Messung gestoppt \u26A0", "Bitte starte sie erneut. ");
       var ecgCount = await ioManager.readECG();
       var accCount = await ioManager.readACC();
       debugPrint("Found $ecgCount entries in ECG table");
@@ -88,6 +125,10 @@ class _HomeState extends State<Home> {
         polar.deviceConnectedStream.listen((event) async {
       ioManager.logToFile(
           "Polar ConnectedStream fired, with isConnectable = ${event.isConnectable}");
+      if (connectingState != ConnectingState.recordingStopped) {
+        NotificationManager().showNotification(
+            "Messung startbereit", "Der PolarH10 Gurt ist verbunden.");
+      }
 
       //Case1: User started new session and wants to connect.
       if (connectingState == ConnectingState.connecting) {
@@ -148,6 +189,8 @@ class _HomeState extends State<Home> {
       ioManager.saveACCBlock(event.timeStamp, event.samples);
     });
     ioManager.logToFile("Started Polar SDK ECG, ACC and HR streams.");
+    NotificationManager()
+        .showNotification("Messung im Gange", "Deine Messung läuft gerade.");
   }
 
   void stopRecording() async {
@@ -196,7 +239,7 @@ class _HomeState extends State<Home> {
     return (micros - offset) * 1000;
   }
 
-  void setMarker() async {
+  void setMarker(String event) {
     //H10 Polar sensor measures timestamp in nanoseconds since 01/01 2000
     //The sensor ignores any timezones and always takes UTC
     final now = DateTime.now();
@@ -205,7 +248,48 @@ class _HomeState extends State<Home> {
     ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Ein marker wurde erfolgreich gesetzt.")));
     ioManager.logToFile("Set a Marker at: $timestamp, with label: 'event'");
-    ioManager.saveMarker(timestamp, "event");
+    ioManager.saveMarker(timestamp, event);
+  }
+
+  void setMarkerDialog() async {
+    showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+              content: const Text("Welchen Marker möchtest du setzen?"),
+              title: const Text("Marker"),
+              actionsAlignment: MainAxisAlignment.center,
+              actions: [
+                Column(
+                  children: [
+                    TextButton(
+                        onPressed: () {
+                          setMarker("Start Sport");
+                          Navigator.of(context).pop();
+                        },
+                        child: const Text("Start Sport")),
+                    TextButton(
+                        onPressed: () {
+                          setMarker("Stop Sport");
+                          Navigator.of(context).pop();
+                        },
+                        child: const Text("Stop Sport")),
+                    TextButton(
+                        onPressed: () {
+                          setMarker("Start Ruhe");
+                          Navigator.of(context).pop();
+                        },
+                        child: const Text("Start Ruhe")),
+                    TextButton(
+                        onPressed: () {
+                          setMarker("Stop Ruhe");
+                          Navigator.of(context).pop();
+                        },
+                        child: const Text("Stop Ruhe")),
+                  ],
+                )
+              ],
+            ));
+    return;
   }
 
   @override
@@ -242,8 +326,14 @@ class _HomeState extends State<Home> {
                 child: Container(
                     //color: Colors.red,
                     child: Center(
-                        child: bottomActions(context, connectingState, connect,
-                            record, stopRecordingDialog, setMarker, cleanUp))))
+                        child: bottomActions(
+                            context,
+                            connectingState,
+                            connect,
+                            record,
+                            stopRecordingDialog,
+                            setMarkerDialog,
+                            cleanUp))))
             // const Flexible(
             //     flex: 1,
             //     child: Center(

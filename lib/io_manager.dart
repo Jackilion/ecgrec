@@ -18,6 +18,11 @@ class IOManager {
     return database != null && database!.isOpen;
   }
 
+  Future<bool> get doesDatabaseExist async {
+    if (path == null) return false;
+    return await File("${path!.path}/ecg.db").exists();
+  }
+
   String get savePath {
     if (path != null) return path!.path;
     return "";
@@ -31,7 +36,8 @@ class IOManager {
   }
 
   File? _logFile;
-  void logToFile(String message) {
+  void logToFile(String message) async {
+    path ??= await getExternalStorageDirectory();
     _logFile ??= File("${path!.path}/log.txt");
     var formatted = "${DateTime.now().toIso8601String()}:\t$message\n";
     _logFile!.writeAsStringSync(formatted, mode: FileMode.append);
@@ -140,7 +146,9 @@ class IOManager {
 
   void saveECGBlock(int timestamp, List<int> samples) async {
     if (oldTimestamp == timestamp) {
-      print("FOUND THE SAME TIMESTAMP IN 2 PACKAGES!!!");
+      debugPrint("FOUND THE SAME TIMESTAMP IN 2 PACKAGES!!!");
+      logToFile(
+          "[ALERT!] Found the same timestamp in 2 packages! Timestamp was: $timestamp");
     }
     oldTimestamp = timestamp;
     final elapsedRealtime = SystemClock.elapsedRealtime().inMicroseconds;
@@ -193,7 +201,9 @@ class IOManager {
   }
 
   void resetDB() async {
-    deleteDatabase('${path}ecg.db');
+    deleteDatabase('${path!.path}/ecg.db');
+    logToFile(
+        "Device has been reset. ECG Database deleted and polar ID reset.");
     //await init();
   }
 

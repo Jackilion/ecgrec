@@ -29,6 +29,9 @@ environment:
 # the latest version available on pub.dev. To see which dependencies have newer
 # versions available, run `flutter pub outdated`.
 dependencies:
+  #workmanager: ^0.5.1
+  is_lock_screen: 2.0.0
+  flutter_local_notifications: ^13.0.0
   system_clock: ^1.2.0
   permission_handler: ^10.0.0
   polar:

@@ -28,6 +28,23 @@ class _SettingsState extends State<Settings> {
   }
 
   void setDeviceId() async {
+    if (await IOManager().doesDatabaseExist) {
+      showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+                title: const Text("Fehler"),
+                content: const Text(
+                    "Die Device Id kann nicht gesetzt werden, da ein Datenbank file existiert. Um die Device Id zu ändern, führe vorher einen reset durch."),
+                actions: [
+                  TextButton(
+                      onPressed: () {
+                        Navigator.of(context).pop();
+                      },
+                      child: const Text("Okay"))
+                ],
+              ));
+      return;
+    }
     var text = textFieldController.text;
     if (text.isNotEmpty) {
       IOManager().deviceId = text;
